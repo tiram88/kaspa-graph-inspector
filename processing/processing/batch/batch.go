@@ -13,6 +13,7 @@ import (
 )
 
 const MaxSupportedMissingDependencies = 600
+const PrePruningPointDaaScoreThreshold = 500
 
 var log = logging.Logger()
 
@@ -42,10 +43,15 @@ func New(database *databasePackage.Database, rpcClient *rpcclient.RPCClient, pru
 	return batch
 }
 
-// InScope returns true if `block` has a greater DAA score than the pruning block
+// InScope returns true if `block` has a greater DAA score than that of the pruning block (minus an allowed threshold)
 // or if no pruning block is defined
 func (b *Batch) InScope(block *externalapi.DomainBlock) bool {
-	return b.prunningBlock == nil || b.prunningBlock.Header.DAAScore() <= block.Header.DAAScore()
+	return b.prunningBlock == nil || b.prunningBlock.Header.DAAScore() <= block.Header.DAAScore()+PrePruningPointDaaScoreThreshold
+}
+
+// IgnoreParents returns true if `block` has a DAA score lower than that of the pruning block
+func (b *Batch) IgnoreParents(block *externalapi.DomainBlock) bool {
+	return b.prunningBlock != nil && block.Header.DAAScore() < b.prunningBlock.Header.DAAScore()
 }
 
 // Add adds a pair `hash` and its matching `block` to the batch.
@@ -125,6 +131,11 @@ func (b *Batch) CollectBlockAndDependencies(databaseTransaction *pg.Tx, hash *ex
 
 // CollectDirectDependencies adds the missing direct parents of `block`
 func (b *Batch) CollectDirectDependencies(databaseTransaction *pg.Tx, hash *externalapi.DomainHash, block *externalapi.DomainBlock) error {
+	// Do not collect dependencies of blocks located below the pruning point
+	if b.IgnoreParents(block) {
+		return nil
+	}
+
 	parentHashes := block.Header.DirectParents()
 	for _, parentHash := range parentHashes {
 		parentExists, err := b.database.DoesBlockExist(databaseTransaction, parentHash)
