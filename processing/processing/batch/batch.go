@@ -113,7 +113,7 @@ func (b *Batch) CollectBlockAndDependencies(databaseTransaction *pg.Tx, hash *ex
 	b.Add(hash, block)
 	for i := 0; i < len(b.blocks); i++ {
 		item := b.blocks[i]
-		err := b.CollectDirectDependencies(databaseTransaction, item.hash, item.DomainBlock)
+		err := b.collectDirectDependencies(databaseTransaction, item.hash, item.DomainBlock)
 		if err != nil {
 			return err
 		}
@@ -129,8 +129,8 @@ func (b *Batch) CollectBlockAndDependencies(databaseTransaction *pg.Tx, hash *ex
 	return nil
 }
 
-// CollectDirectDependencies adds the missing direct parents of `block`
-func (b *Batch) CollectDirectDependencies(databaseTransaction *pg.Tx, hash *externalapi.DomainHash, block *externalapi.DomainBlock) error {
+// collectDirectDependencies adds the missing direct parents of `block`
+func (b *Batch) collectDirectDependencies(databaseTransaction *pg.Tx, hash *externalapi.DomainHash, block *externalapi.DomainBlock) error {
 	// Do not collect dependencies of blocks located below the pruning point
 	if b.IgnoreParents(block) {
 		return nil
