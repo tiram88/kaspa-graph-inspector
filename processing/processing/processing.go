@@ -570,19 +570,30 @@ func (p *Processing) processBlockAndDependencies(databaseTransaction *pg.Tx, has
 	if err != nil {
 		return err
 	}
-	for {
-		_, block, ok := batch.Pop()
-		if !ok {
-			break
+	ordered := batch.TopologicalSort()
+	for i, ba := range ordered {
+		// Ignore the block passed as arg to this function
+		if *ba.Hash() == *hash {
+			continue
 		}
-		if !batch.Empty() {
-			log.Warnf("Handling missing dependency block %s", consensushashing.BlockHash(block))
+
+		// Process missing dependency block
+		log.Warnf("Handling missing dependency block #%d %s", i, ba.Hash())
+		err = p.processBlock(databaseTransaction, ba.Block())
+		if err != nil {
+			return err
+		}
+	}
+
+	// Process the block passed as arg
+	if len(ordered) > 1 {
+		log.Warnf("Handling block %s after its missing dependencies (%d)", consensushashing.BlockHash(block), len(ordered)-1)
 		}
 		err = p.processBlock(databaseTransaction, block)
 		if err != nil {
 			return err
 		}
-	}
+
 	return nil
 }
 

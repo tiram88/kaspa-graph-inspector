@@ -7,6 +7,7 @@ import (
 	databasePackage "github.com/kaspa-live/kaspa-graph-inspector/processing/database"
 	"github.com/kaspa-live/kaspa-graph-inspector/processing/infrastructure/logging"
 	"github.com/kaspa-live/kaspa-graph-inspector/processing/infrastructure/network/rpcclient"
+	"github.com/kaspa-live/kaspa-graph-inspector/processing/infrastructure/queue"
 	"github.com/kaspanet/kaspad/app/appmessage"
 	"github.com/kaspanet/kaspad/domain/consensus/model/externalapi"
 	"github.com/pkg/errors"
@@ -29,7 +30,16 @@ type Block externalapi.DomainBlock
 
 type BlockAndHash struct {
 	*externalapi.DomainBlock
-	hash *externalapi.DomainHash
+	hash     *externalapi.DomainHash
+	children map[externalapi.DomainHash]*BlockAndHash
+}
+
+func (ba *BlockAndHash) Hash() *externalapi.DomainHash {
+	return ba.hash
+}
+
+func (ba *BlockAndHash) Block() *externalapi.DomainBlock {
+	return ba.DomainBlock
 }
 
 func New(database *databasePackage.Database, rpcClient *rpcclient.RPCClient, prunningBlock *externalapi.DomainBlock) *Batch {
@@ -67,6 +77,60 @@ func (b *Batch) Add(hash *externalapi.DomainHash, block *externalapi.DomainBlock
 	}
 }
 
+func (b *Batch) TopologicalSort() []*BlockAndHash {
+	var sorted = make([]*BlockAndHash, 0)
+	var inDegree = make(map[externalapi.DomainHash]int, len(b.blocks))
+
+	for _, ba := range b.blocks {
+		ba.children = make(map[externalapi.DomainHash]*BlockAndHash)
+		inDegree[*ba.hash] = 0
+	}
+
+	// Create children edges
+	for _, ba := range b.blocks {
+		for _, h := range ba.Header.DirectParents() {
+			if parent, ok := b.hashes[*h]; ok {
+				parent.children[*ba.hash] = ba
+			}
+		}
+	}
+
+	for _, ba := range b.blocks {
+		for h, _ := range ba.children {
+			if b.Has(&h) {
+				inDegree[h]++
+			}
+		}
+	}
+
+	queue := queue.New()
+	for h, degree := range inDegree {
+		if degree == 0 {
+			queue.PushBack(h)
+		}
+	}
+
+	for !queue.IsEmpty() {
+		current := queue.PopFront().(externalapi.DomainHash)
+		ba := b.hashes[current]
+		for h, _ := range ba.children {
+			if b.Has(&h) {
+				inDegree[h]--
+				if inDegree[h] == 0 {
+					queue.PushBack(h)
+				}
+			}
+		}
+		sorted = append(sorted, b.hashes[current])
+	}
+
+	if len(sorted) != len(b.blocks) {
+		log.Errorf("Topological sort failed for DAG built on %s missing dependencies", b.blocks[0].Hash())
+	}
+
+	return sorted
+}
+
 // Has returns true if `hash` exists in the batch
 func (b *Batch) Has(hash *externalapi.DomainHash) bool {
 	_, ok := b.hashes[*hash]
@@ -87,35 +151,20 @@ func (b *Batch) Empty() bool {
 	return len(b.blocks) == 0
 }
 
-// Pop returns the latest hash and block added and removes the pair from the batch.
-// Returns false if the batch is empty
-func (b *Batch) Pop() (*externalapi.DomainHash, *externalapi.DomainBlock, bool) {
-	cnt := len(b.blocks)
-	if cnt == 0 {
-		return nil, nil, false
-	}
-	blockAddress := b.blocks[cnt-1]
-
-	// remove blockAddress from batch
-	if cnt > 1 {
-		b.blocks = b.blocks[:cnt-1]
-	} else {
-		b.blocks = make([]*BlockAndHash, 0)
-	}
-	delete(b.hashes, *blockAddress.hash)
-
-	return blockAddress.hash, blockAddress.DomainBlock, true
-}
-
 // CollectBlockAndDependencies adds `block` and all its missing direct and
 // indirect dependencies
 func (b *Batch) CollectBlockAndDependencies(databaseTransaction *pg.Tx, hash *externalapi.DomainHash, block *externalapi.DomainBlock) error {
 	b.Add(hash, block)
-	for i := 0; i < len(b.blocks); i++ {
+	i := 0
+	for {
 		item := b.blocks[i]
 		err := b.collectDirectDependencies(databaseTransaction, item.hash, item.DomainBlock)
 		if err != nil {
 			return err
+		}
+		i++
+		if i >= len(b.blocks) {
+			break
 		}
 
 		// If too many missing dependencies are found, just terminate the process and
