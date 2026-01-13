@@ -182,6 +182,7 @@ func (b *Batch) CollectBlockAndDependencies(databaseTransaction *pg.Tx, hash *ex
 func (b *Batch) collectDirectDependencies(databaseTransaction *pg.Tx, hash *externalapi.DomainHash, block *externalapi.DomainBlock) error {
 	// Do not collect dependencies of blocks located below the pruning point
 	if b.IgnoreParents(block) {
+		log.Infof("Block %s is located below the pruning point so no further dependencies are collected", hash)
 		return nil
 	}
 

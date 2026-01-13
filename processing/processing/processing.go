@@ -30,6 +30,8 @@ type Processing struct {
 	database  *databasePackage.Database
 	rpcClient *rpcclient.RPCClient
 	appConfig *model.AppConfig
+	syncBlock *externalapi.DomainBlock
+	syncHash  *externalapi.DomainHash
 	syncing   bool
 
 	sync.Mutex
@@ -212,37 +214,27 @@ func (p *Processing) ResyncDatabase() error {
 			return err
 		}
 
-		pruningPointHash, err := externalapi.NewDomainHashFromString(dagInfo.PruningPointHash)
+		p.syncHash, p.syncBlock, err = p.getDomainBlockFromString(dagInfo.PruningPointHash)
 		if err != nil {
 			return err
 		}
-
-		rpcPruning, err := p.rpcClient.GetBlock(dagInfo.PruningPointHash, false)
-		if err != nil {
-			return err
-		}
-
-		pruningPointBlock, err := appmessage.RPCBlockToDomainBlock(rpcPruning.Block)
-		if err != nil {
-			return err
-		}
-
-		hasPruningBlock, err := p.database.DoesBlockExist(databaseTransaction, pruningPointHash)
+		hasPruningBlock, err := p.database.DoesBlockExist(databaseTransaction, p.syncHash)
 		if err != nil {
 			return err
 		}
 
 		vspcCycle := 0
-		lowHash := dagInfo.PruningPointHash
+		lowBlock := p.syncBlock
+		lowHash := p.syncHash
 
 		keepDatabase := hasPruningBlock && !p.config.ClearDB
 		if keepDatabase {
 			// The pruning block is already in the database
 			// so we keep the database as it is and sync the new blocks
-			log.Infof("Prunning point %s already in the database", pruningPointHash)
+			log.Infof("Pruning point %s already in the database", p.syncHash)
 			log.Infof("Database kept")
 
-			pruningBlockHeight, err := p.database.BlockHeightByHash(databaseTransaction, pruningPointHash)
+			pruningBlockHeight, err := p.database.BlockHeightByHash(databaseTransaction, p.syncHash)
 			if err != nil {
 				return err
 			}
@@ -252,8 +244,8 @@ func (p *Processing) ResyncDatabase() error {
 			log.Infof("Cache loaded from the database")
 
 			log.Infof("Searching for an optimal sync starting point")
-			lowHash = p.findOptimalSyncStartingBlock(databaseTransaction, dagInfo.PruningPointHash, pruningPointBlock.Header.DAAScore())
-			if lowHash != dagInfo.PruningPointHash {
+			lowHash, lowBlock = p.findOptimalSyncStartingBlock(databaseTransaction)
+			if *lowHash != *p.syncHash {
 				log.Infof("Optimal sync starting point set at %s", lowHash)
 			} else {
 				log.Infof("Sync starting point set at the pruning point")
@@ -268,18 +260,19 @@ func (p *Processing) ResyncDatabase() error {
 			log.Infof("Database cleared")
 
 			pruningPointDatabaseBlock := &model.Block{
-				BlockHash:                      pruningPointHash.String(),
-				Timestamp:                      rpcPruning.Block.Header.Timestamp,
+				BlockHash:                      p.syncHash.String(),
+				Timestamp:                      p.syncBlock.Header.TimeInMilliseconds(),
 				ParentIDs:                      []uint64{},
-				Height:                         0,
+				Height:                         1,
 				HeightGroupIndex:               0,
 				SelectedParentID:               nil,
 				Color:                          model.ColorGray,
 				IsInVirtualSelectedParentChain: true,
 				MergeSetRedIDs:                 []uint64{},
 				MergeSetBlueIDs:                []uint64{},
+				DAAScore:                       p.syncBlock.Header.DAAScore(),
 			}
-			err = p.database.InsertBlock(databaseTransaction, pruningPointHash, pruningPointDatabaseBlock)
+			err = p.database.InsertBlock(databaseTransaction, p.syncHash, pruningPointDatabaseBlock)
 			if err != nil {
 				return err
 			}
@@ -291,12 +284,13 @@ func (p *Processing) ResyncDatabase() error {
 			if err != nil {
 				return err
 			}
-			log.Infof("Pruning point %s has been added to the database", pruningPointHash)
+			log.Infof("Pruning point %s has been added to the database", p.syncHash)
 		}
 
 		for cycle := 0; ; cycle++ {
 			log.Infof("Cycle %d - Load node blocks", cycle)
-			hashesBetweenPruningPointAndHeadersSelectedTip, err := p.getHashesToSelectedTip(&lowHash, dagInfo.VirtualDAAScore, rpcPruning.Block.Header.DAAScore)
+			var hashesToSelectedTip []*externalapi.DomainHash
+			hashesToSelectedTip, lowHash, lowBlock, err = p.getHashesToSelectedTip(cycle, lowHash, lowBlock)
 			if err != nil {
 				return err
 			}
@@ -304,38 +298,9 @@ func (p *Processing) ResyncDatabase() error {
 
 			startIndex := int(0)
 			if keepDatabase && cycle == 0 {
-				// Special case occurring when launching a version of KGI supporting DAA scores on a
-				// database freshly migrated and introducing DAA scores.
-				pruningPointID, err := p.database.BlockIDByHash(databaseTransaction, pruningPointHash)
-				if err != nil {
-					return err
-				}
-				pruningPointDatabaseBlock, err := p.database.GetBlock(databaseTransaction, pruningPointID)
-				if err != nil {
-					return err
-				}
-				noDAAScoreCount, err := p.database.BlockCountAtDAAScore(databaseTransaction, 0)
-				if err != nil {
-					return err
-				}
-				if pruningPointDatabaseBlock.DAAScore == 0 && noDAAScoreCount > uint32(p.config.NetParams().K) {
-					log.Infof("Cycle %d - Updating DAA score of %d blocks in the database", cycle, len(hashesBetweenPruningPointAndHeadersSelectedTip))
-					blockIDsToDAAScores, err := p.getBlocksDAAScores(databaseTransaction, hashesBetweenPruningPointAndHeadersSelectedTip)
-					log.Infof("Cycle %d - DAA scores of %d blocks collected", cycle, len(blockIDsToDAAScores))
-					if err != nil {
-						return err
-					}
-					err = p.database.UpdateBlockDAAScores(databaseTransaction, blockIDsToDAAScores)
-					if err != nil {
-						return err
-					}
-					log.Infof("Cycle %d - DAA scores of %d blocks stored in the database", cycle, len(blockIDsToDAAScores))
-				}
-				// End of special case
-
-				log.Infof("Cycle %d - Syncing %d blocks with the database", cycle, len(hashesBetweenPruningPointAndHeadersSelectedTip))
+				log.Infof("Cycle %d - Syncing %d blocks with the database", cycle, len(hashesToSelectedTip))
 				if !p.config.Resync {
-					startIndex, err = p.database.FindLatestStoredBlockIndex(databaseTransaction, hashesBetweenPruningPointAndHeadersSelectedTip)
+					startIndex, err = p.database.FindLatestStoredBlockIndex(databaseTransaction, hashesToSelectedTip)
 					if err != nil {
 						return err
 					}
@@ -344,25 +309,21 @@ func (p *Processing) ResyncDatabase() error {
 					startIndex = tools.Max(startIndex-3000, 0)
 				}
 			} else {
-				log.Infof("Cycle %d - Adding %d blocks to the database", cycle, len(hashesBetweenPruningPointAndHeadersSelectedTip))
+				log.Infof("Cycle %d - Adding %d blocks to the database", cycle, len(hashesToSelectedTip))
 			}
 
-			totalToAdd := len(hashesBetweenPruningPointAndHeadersSelectedTip) - startIndex
+			totalToAdd := len(hashesToSelectedTip) - startIndex
 
-			for i := startIndex; i < len(hashesBetweenPruningPointAndHeadersSelectedTip); i++ {
-				blockHash := hashesBetweenPruningPointAndHeadersSelectedTip[i]
-				rpcBlock, err := p.rpcClient.GetBlock(blockHash.String(), false)
-				if err != nil {
-					return err
-				}
-				block, err := appmessage.RPCBlockToDomainBlock(rpcBlock.Block)
+			for i := startIndex; i < len(hashesToSelectedTip); i++ {
+				hash := hashesToSelectedTip[i]
+				block, err := p.getDomainBlock(hash)
 				if err != nil {
 					return err
 				}
 				if p.config.Resync || i-startIndex >= 6000 {
 					err = p.processBlock(databaseTransaction, block)
 				} else {
-					err = p.processBlockAndDependencies(databaseTransaction, blockHash, block, pruningPointBlock)
+					err = p.processBlockAndDependencies(databaseTransaction, hash, block)
 				}
 				if err != nil {
 					return err
@@ -375,16 +336,16 @@ func (p *Processing) ResyncDatabase() error {
 			}
 
 			// Resync the VPSC when getting close to the tip
-			if len(hashesBetweenPruningPointAndHeadersSelectedTip) < 20 {
-				err := p.resyncVirtualSelectedParentChain(databaseTransaction, true)
+			if len(hashesToSelectedTip) < 20 {
+				err := p.resyncVirtualSelectedParentChain(databaseTransaction, false)
 				if err != nil {
 					return err
 				}
 				vspcCycle++
 			}
 
-			if cycle > 0 && vspcCycle > 1 && len(hashesBetweenPruningPointAndHeadersSelectedTip) < 10 {
-				log.Infof("Cycle %d - Almost at tip with last %d blocks added, stopping resync", cycle, len(hashesBetweenPruningPointAndHeadersSelectedTip))
+			if cycle > 0 && vspcCycle > 1 && len(hashesToSelectedTip) < 10 {
+				log.Infof("Cycle %d - Almost at tip with last %d blocks added, stopping resync", cycle, len(hashesToSelectedTip))
 				break
 			}
 
@@ -396,68 +357,102 @@ func (p *Processing) ResyncDatabase() error {
 	})
 }
 
-func (p *Processing) findOptimalSyncStartingBlock(databaseTransaction *pg.Tx, pruningPointHash string, pruningPointDAAScore uint64) string {
+func (p *Processing) findOptimalSyncStartingBlock(databaseTransaction *pg.Tx) (*externalapi.DomainHash, *externalapi.DomainBlock) {
 	const OPTIMAL_START_DAA_SCORE_OFFSET = 600
 
+	syncHash := p.syncHash
+	syncBlock := p.syncBlock
 	highestVspcBlock, err := p.database.HighestBlockInVirtualSelectedParentChain(databaseTransaction)
 	if err != nil {
-		return pruningPointHash
+		return syncHash, syncBlock
 	}
 
-	if highestVspcBlock.DAAScore > OPTIMAL_START_DAA_SCORE_OFFSET && highestVspcBlock.DAAScore > pruningPointDAAScore {
+	if highestVspcBlock.DAAScore > OPTIMAL_START_DAA_SCORE_OFFSET && highestVspcBlock.DAAScore > p.syncBlock.Header.DAAScore() {
 		startBlockID, err := p.database.BlockIDByDAAScore(databaseTransaction, highestVspcBlock.DAAScore-OPTIMAL_START_DAA_SCORE_OFFSET)
 		if err != nil {
-			return pruningPointHash
+			return syncHash, syncBlock
 		}
 
-		startBlock, err := p.database.GetBlock(databaseTransaction, startBlockID)
+		dbStart, err := p.database.GetBlock(databaseTransaction, startBlockID)
 		if err != nil {
-			return pruningPointHash
+			return syncHash, syncBlock
 		}
 
-		_, err = p.rpcClient.GetBlock(startBlock.BlockHash, false)
+		startHash, startBlock, err := p.getDomainBlockFromString(dbStart.BlockHash)
 		if err != nil {
-			return pruningPointHash
+			return syncHash, syncBlock
 		}
 
-		return startBlock.BlockHash
+		return startHash, startBlock
 	}
 
-	return pruningPointHash
+	return syncHash, syncBlock
 }
 
-func (p *Processing) getHashesToSelectedTip(lowHash *string, virtualDAAScore uint64, pruningDAAScore uint64) ([]*externalapi.DomainHash, error) {
-	selectedTipHash, err := p.rpcClient.GetSelectedTipHash()
+func (p *Processing) getDomainBlockFromString(stringHash string) (*externalapi.DomainHash, *externalapi.DomainBlock, error) {
+	hash, err := externalapi.NewDomainHashFromString(stringHash)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	block, err := p.getDomainBlock(hash)
+	if err != nil {
+		return nil, nil, err
+	}
+	return hash, block, nil
+}
+
+func (p *Processing) getDomainBlock(hash *externalapi.DomainHash) (*externalapi.DomainBlock, error) {
+	rpcBlock, err := p.rpcClient.GetBlock(hash.String(), false)
 	if err != nil {
 		return nil, err
+	}
+
+	block, err := appmessage.RPCBlockToDomainBlock(rpcBlock.Block)
+	if err != nil {
+		return nil, err
+	}
+	return block, nil
+}
+
+func (p *Processing) getHashesToSelectedTip(cycle int, lowHash *externalapi.DomainHash, lowBlock *externalapi.DomainBlock) ([]*externalapi.DomainHash, *externalapi.DomainHash, *externalapi.DomainBlock, error) {
+	dagInfo, err := p.rpcClient.GetBlockDAGInfo()
+	if err != nil {
+		return nil, lowHash, lowBlock, err
+	}
+	virtualDAAScore := dagInfo.VirtualDAAScore
+	syncDAAScore := p.syncBlock.Header.DAAScore()
+	selectedTipHash, err := p.rpcClient.GetSelectedTipHash()
+	if err != nil {
+		return nil, lowHash, lowBlock, err
 	}
 
 	hashesToSelectedTip := make([]*externalapi.DomainHash, 0)
 	count := 0
 outer:
 	for i := 0; ; i++ {
-		log.Debugf("Requesting GetBlocks with lowHash %s", *lowHash)
-		getBlocks, err := p.rpcClient.GetBlocks(*lowHash, false, false)
+		log.Debugf("Cycle %d - Requesting GetBlocks with lowHash %s", cycle, *lowHash)
+		getBlocks, err := p.rpcClient.GetBlocks(lowHash.String(), false, false)
 		if err != nil {
-			return nil, err
+			return nil, lowHash, lowBlock, err
 		}
 		count += len(getBlocks.BlockHashes)
 		if i%1000 == 0 {
 			rpcBlock, err := p.rpcClient.GetBlock(getBlocks.BlockHashes[0], false)
 			if err != nil {
-				return nil, err
+				return nil, lowHash, lowBlock, err
 			}
 
-			log.Infof("Time %s", time.Unix(rpcBlock.Block.Header.Timestamp/1000, 0))
-
-			if virtualDAAScore-pruningDAAScore != 0 {
-				log.Infof("Progress %d%%", 100*(rpcBlock.Block.Header.DAAScore-pruningDAAScore)/(virtualDAAScore-pruningDAAScore))
+if virtualDAAScore-syncDAAScore != 0 {
+			log.Infof("Cycle %d - Time %s - Progress %d%%", cycle, time.Unix(rpcBlock.Block.Header.Timestamp/1000, 0), 100.0*(rpcBlock.Block.Header.DAAScore-syncDAAScore)/(virtualDAAScore-syncDAAScore))
+			} else {
+				log.Infof("Cycle %d - Time %s", cycle, time.Unix(rpcBlock.Block.Header.Timestamp/1000, 0))
 			}
 		}
 
 		hashes, err := hashesFromStrings(getBlocks.BlockHashes)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 
 		hashesToSelectedTip = append(hashesToSelectedTip, hashes...)
@@ -467,11 +462,18 @@ outer:
 			}
 		}
 
-		*lowHash = getBlocks.BlockHashes[len(getBlocks.BlockHashes)-1]
+		lowHash = hashes[len(hashes)-1]
+lowBlock, err = p.getDomainBlock(lowHash)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
-	*lowHash = selectedTipHash.SelectedTipHash
-	return hashesToSelectedTip, nil
+	lowHash, lowBlock, err = p.getDomainBlockFromString(selectedTipHash.SelectedTipHash)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return hashesToSelectedTip, lowHash, lowBlock, nil
 }
 
 func (p *Processing) ResyncVirtualSelectedParentChain() error {
@@ -538,7 +540,7 @@ func (p *Processing) resyncVirtualSelectedParentChain(databaseTransaction *pg.Tx
 			},
 		}
 		if withDependencies {
-			err = p.processBlockAndDependencies(databaseTransaction, virtualSelectedParentHash, virtualSelectedParentBlock, nil)
+			err = p.processBlockAndDependencies(databaseTransaction, virtualSelectedParentHash, virtualSelectedParentBlock)
 			if err != nil {
 				return err
 			}
@@ -557,15 +559,14 @@ func (p *Processing) ProcessBlock(block *externalapi.DomainBlock) error {
 	defer p.Unlock()
 
 	return p.database.RunInTransaction(func(databaseTransaction *pg.Tx) error {
-		return p.processBlockAndDependencies(databaseTransaction, consensushashing.BlockHash(block), block, nil)
+		return p.processBlockAndDependencies(databaseTransaction, consensushashing.BlockHash(block), block)
 	})
 }
 
 // processBlockAndDependencies processes `block` and all its missing dependencies
-func (p *Processing) processBlockAndDependencies(databaseTransaction *pg.Tx, hash *externalapi.DomainHash,
-	block, pruningBlock *externalapi.DomainBlock) error {
+func (p *Processing) processBlockAndDependencies(databaseTransaction *pg.Tx, hash *externalapi.DomainHash, block *externalapi.DomainBlock) error {
 
-	batch := batch.New(p.database, p.rpcClient, pruningBlock)
+	batch := batch.New(p.database, p.rpcClient, p.syncBlock)
 	err := batch.CollectBlockAndDependencies(databaseTransaction, hash, block)
 	if err != nil {
 		return err
@@ -628,8 +629,7 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *externalapi
 
 		parentIDs, parentHeights, err := p.database.BlockIDsAndHeightsByHashes(databaseTransaction, existingParentHashes)
 		if err != nil {
-			return errors.Errorf("Could not resolve "+
-				"parent IDs for block %s: %s", blockHash, err)
+			return errors.Errorf("Could not resolve parent IDs for block %s: %s", blockHash, err)
 		}
 
 		blockHeight := uint64(0)
@@ -661,12 +661,8 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *externalapi
 		if err != nil {
 			return errors.Wrapf(err, "Could not insert block %s", blockHash)
 		}
+		blockID := databaseBlock.ID
 
-		blockID, err := p.database.BlockIDByHash(databaseTransaction, blockHash)
-		if err != nil {
-			// enhanced error description
-			return errors.Wrapf(err, "Could not get id for block %s", blockHash)
-		}
 		heightGroup := &model.HeightGroup{
 			Height: blockHeight,
 			Size:   blockHeightGroupIndex + 1,
@@ -677,12 +673,8 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *externalapi
 			return errors.Wrapf(err, "Could not insert or update height group %d for block %s", blockHeight, blockHash)
 		}
 
-		for _, parentID := range parentIDs {
-			parentHeight, err := p.database.BlockHeight(databaseTransaction, parentID)
-			if err != nil {
-				// enhanced error description
-				return errors.Wrapf(err, "Could not get block height of parent id %d for block %s", parentID, blockHash)
-			}
+		for i, parentID := range parentIDs {
+			parentHeight := parentHeights[i]
 			parentHeightGroupIndex, err := p.database.BlockHeightGroupIndex(databaseTransaction, parentID)
 			if err != nil {
 				// enhanced error description
@@ -748,7 +740,7 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *externalapi
 		// return errors.Wrapf(err, "Could not get ids of merge set reds for block %s", blockHash)
 
 		// Let's ignore this error temporarily and just report it in the log
-		// This occures sometimes when the app was fresly started, at the end or just after ResyncDatabase
+		// This occurs sometimes when the app was freshly started, at the end or just after ResyncDatabase
 		// The actual conditions and the way to solve this has to be determined yet.
 		// Update 2022-04-22: processBlockAndDependencies should solve the issue
 		log.Errorf("Could not get ids of merge set reds for block %s: %s", blockHash, mergeSetReds)
@@ -765,7 +757,7 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *externalapi
 		// return errors.Wrapf(err, "Could not get ids of merge set blues for block %s", blockHash)
 
 		// Let's ignore this error temporarily and just report it in the log
-		// This occures sometimes when the app was fresly started, at the end or just after ResyncDatabase
+		// This occurs sometimes when the app was freshly started, at the end or just after ResyncDatabase
 		// The actual conditions and the way to solve this has to be determined yet.
 		// Update 2022-04-22: processBlockAndDependencies should solve the issue
 		log.Errorf("Could not get ids of merge set blues for block %s: %s", blockHash, mergeSetBlues)
@@ -788,7 +780,7 @@ func (p *Processing) processMissingBlock(databaseTransaction *pg.Tx, blockHash *
 	if err != nil {
 		return 0, err
 	}
-	err = p.processBlockAndDependencies(databaseTransaction, consensushashing.BlockHash(block), block, nil)
+	err = p.processBlockAndDependencies(databaseTransaction, consensushashing.BlockHash(block), block)
 	if err != nil {
 		return 0, err
 	}
