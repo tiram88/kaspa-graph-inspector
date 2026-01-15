@@ -1,4 +1,4 @@
-FROM golang:1.19-alpine AS build
+FROM golang:1.23-alpine AS build
 
 # gcc and libc (musl-dev) are required by kaspad
 # git is required to build kaspad by commit-hash
@@ -10,7 +10,7 @@ WORKDIR /build
 COPY ./go.mod .
 COPY ./go.sum .
 
-ARG KASPAD_VERSION
+ARG KASPAD_VERSION=v0.12.22
 
 # Exit if KASPAD_VERSION is not set
 RUN if [ -z "${KASPAD_VERSION}" ]; then exit 1; fi
