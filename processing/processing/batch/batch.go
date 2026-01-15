@@ -63,6 +63,7 @@ func (b *Batch) IgnoreParents(block *block.Block) bool {
 // Avoid duplicates and ignore blocks not in scope
 func (b *Batch) Add(block *block.Block) {
 	if !b.Has(block.Hash) && b.InScope(block) {
+		block.IsPlaceholder = b.IgnoreParents(block)
 		ba := &BlockAndHash{
 			Block: block,
 		}

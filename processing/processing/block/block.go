@@ -8,9 +8,10 @@ import (
 )
 
 type Block struct {
-	Hash     *externalapi.DomainHash
-	Domain	*externalapi.DomainBlock
-	Rpc      *appmessage.RPCBlock
+	Hash          *externalapi.DomainHash
+	Domain        *externalapi.DomainBlock
+	Rpc           *appmessage.RPCBlock
+	IsPlaceholder bool
 }
 
 func GetBlockFromRpc(rpc *appmessage.RPCBlock) (*Block, error) {
@@ -20,9 +21,9 @@ func GetBlockFromRpc(rpc *appmessage.RPCBlock) (*Block, error) {
 	}
 
 	block := &Block{
-		Hash: consensushashing.BlockHash(domain),
+		Hash:   consensushashing.BlockHash(domain),
 		Domain: domain,
-		Rpc: rpc,
+		Rpc:    rpc,
 	}
 	return block, nil
 }
@@ -52,10 +53,9 @@ func GetBlock(rpcClient *rpcclient.RPCClient, hash *externalapi.DomainHash) (*Bl
 	}
 
 	block := &Block{
-		Hash: hash,
+		Hash:   hash,
 		Domain: domain,
-		Rpc: rpc.Block,
+		Rpc:    rpc.Block,
 	}
 	return block, nil
 }
-
