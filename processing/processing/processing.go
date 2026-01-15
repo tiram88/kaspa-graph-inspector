@@ -295,15 +295,13 @@ func (p *Processing) ResyncDatabase() error {
 			startIndex := int(0)
 			if keepDatabase && cycle == 0 {
 				log.Infof("Cycle %d - Syncing %d blocks with the database", cycle, len(hashesToSelectedTip))
-				if !p.config.Resync {
-					startIndex, err = p.database.FindLatestStoredBlockIndex(databaseTransaction, hashesToSelectedTip)
-					if err != nil {
-						return err
-					}
-					log.Infof("Cycle %d - First %d blocks already exist in the database", cycle, startIndex)
-					// We start from an earlier point (~ 5 minutes) to make sure we didn't miss any data
-					startIndex = tools.Max(startIndex-3000, 0)
+				startIndex, err = p.database.FindLatestStoredBlockIndex(databaseTransaction, hashesToSelectedTip)
+				if err != nil {
+					return err
 				}
+				log.Infof("Cycle %d - First %d blocks already exist in the database", cycle, startIndex)
+				// We start from an earlier point (~ 5 minutes) to make sure we didn't miss any data
+				startIndex = tools.Max(startIndex-3000, 0)
 			}
 
 			totalToAdd := len(hashesToSelectedTip) - startIndex
@@ -315,7 +313,7 @@ func (p *Processing) ResyncDatabase() error {
 				if err != nil {
 					return err
 				}
-				if !p.config.Resync && i-startIndex >= 1000 {
+				if i-startIndex >= 1000 {
 					err = p.processBlock(databaseTransaction, block, FailOnMissingData)
 					// Some edge cases close to the end of hashesToSelectedTip range may trigger missing dependencies
 					if err != nil {

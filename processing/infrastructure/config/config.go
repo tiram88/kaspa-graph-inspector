@@ -38,7 +38,6 @@ type Flags struct {
 	ConnectPeers             []string `long:"connect" description:"Connect only to the specified peers at startup"`
 	DNSSeed                  string   `long:"dnsseed" description:"Override DNS seeds with specified hostname (Only 1 hostname allowed)"`
 	GRPCSeed                 string   `long:"grpcseed" description:"Hostname of gRPC server for seeding peers"`
-	Resync                   bool     `long:"resync" description:"Force to resync all available node blocks with the PostgrSQL database -- Use if some recently added blocks have missing parents"`
 	ClearDB                  bool     `long:"clear-db" description:"Clear the PostgrSQL database and sync from scratch"`
 	LogLevel                 string   `short:"d" long:"loglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical} -- You may also specify <subsystem>=<level>,<subsystem2>=<level>,... to set the log level for individual subsystems -- Use show to list available subsystems"`
 	RPCServer                string   `short:"s" long:"rpcserver" description:"RPC server to connect to"`
