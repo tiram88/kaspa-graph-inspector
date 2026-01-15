@@ -59,3 +59,20 @@ func GetBlock(rpcClient *rpcclient.RPCClient, hash *externalapi.DomainHash) (*Bl
 	}
 	return block, nil
 }
+
+func (b *Block) IsGenesis() bool {
+	return len(b.Domain.Header.DirectParents()) == 0
+}
+
+// HashesFromStrings converts an array of strings into an array of hashes
+func HashesFromStrings(strings []string) ([]*externalapi.DomainHash, error) {
+	hashes := make([]*externalapi.DomainHash, len(strings))
+	for i, str := range strings {
+		var err error
+		hashes[i], err = externalapi.NewDomainHashFromString(str)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return hashes, nil
+}

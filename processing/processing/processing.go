@@ -86,6 +86,9 @@ func (p *Processing) init() error {
 		return err
 	}
 
+	// // Debug: long delay before getting the first blocks via subscription will trigger a big missing dependencies DAG
+	// time.Sleep(10 * time.Second)
+
 	// Start listening to events only after resyncing is done, otherwise we get overwhelmed
 	err = p.initConsensusEventsHandler()
 	if err != nil {
@@ -120,12 +123,12 @@ func (p *Processing) initRpcClientEventHandler() {
 
 func (p *Processing) initConsensusEventsHandler() error {
 	err := p.rpcClient.RegisterForVirtualSelectedParentChainChangedNotifications(false, func(notification *appmessage.VirtualSelectedParentChainChangedNotificationMessage) {
-		added, err := hashesFromStrings(notification.AddedChainBlockHashes)
+		added, err := block.HashesFromStrings(notification.AddedChainBlockHashes)
 		if err != nil {
 			panic(err)
 		}
 
-		removed, err := hashesFromStrings(notification.RemovedChainBlockHashes)
+		removed, err := block.HashesFromStrings(notification.RemovedChainBlockHashes)
 		if err != nil {
 			panic(err)
 		}
@@ -157,7 +160,7 @@ func (p *Processing) initConsensusEventsHandler() error {
 		}
 
 		log.Debugf("Consensus event handler gets block %s", block.Hash)
-		err = p.ProcessBlockAndDependencies(block)
+		err = p.ProcessBlockAndDependencies(block, true)
 		if err != nil {
 			logging.LogErrorAndExit("Failed to process block added consensus event: %s", err)
 		}
@@ -232,11 +235,11 @@ func (p *Processing) ResyncDatabase() error {
 		vspcCycle := 0
 		lowBlock := p.syncBlock
 
-		keepDatabase := hasPruningBlock && !p.config.ClearDB && false
+		keepDatabase := hasPruningBlock && !p.config.ClearDB // && false
 		if keepDatabase {
 			// The pruning block is already in the database
 			// so we keep the database as it is and sync the new blocks
-			log.Infof("Pruning point %s already in the database", p.syncBlock.Hash)
+			log.Infof("Pruning point %s is already in the database", p.syncBlock.Hash)
 			log.Infof("Database kept")
 
 			pruningBlockHeight, err := p.database.BlockHeightByHash(databaseTransaction, p.syncBlock.Hash)
@@ -253,7 +256,7 @@ func (p *Processing) ResyncDatabase() error {
 			if *lowBlock.Hash != *p.syncBlock.Hash {
 				log.Infof("Optimal sync starting point set at %s", lowBlock.Hash)
 			} else {
-				log.Infof("Sync starting point set at the pruning point")
+				log.Infof("Sync starting point set at the pruning point %s", p.syncBlock.Hash)
 			}
 		} else {
 			// The pruning block was not found in the database
@@ -262,14 +265,21 @@ func (p *Processing) ResyncDatabase() error {
 			if err != nil {
 				return err
 			}
+			if !hasPruningBlock {
+				log.Infof("Pruning point %s is not in the database", p.syncBlock.Hash)
+			}
 			log.Infof("Database cleared")
+			log.Infof("Sync starting point set at the pruning point %s", p.syncBlock.Hash)
 
-			err := p.processBlockAndDependencies(databaseTransaction, p.syncBlock)
+			// We add the full merge sets of the sync block into the database.
+			// This will set the added deps as disconnected placeholders but will allow an errorless
+			// block processing.
+			err := p.processBlockAndDependencies(databaseTransaction, p.syncBlock, true)
 			if err != nil {
-				log.Errorf("Pruning point %s could not be added to the database", p.syncBlock.Hash)
+				log.Errorf("Pruning point %s and its dependencies could not be added to the database", p.syncBlock.Hash)
 				return err
 			}
-			log.Infof("Pruning point %s has been added to the database", p.syncBlock.Hash)
+			log.Infof("Pruning point %s and its dependencies have been added to the database", p.syncBlock.Hash)
 		}
 
 		var block *block.Block
@@ -291,14 +301,13 @@ func (p *Processing) ResyncDatabase() error {
 						return err
 					}
 					log.Infof("Cycle %d - First %d blocks already exist in the database", cycle, startIndex)
-					// We start from an earlier point (~ 5 minutes) to make sure we didn't miss any mutation
+					// We start from an earlier point (~ 5 minutes) to make sure we didn't miss any data
 					startIndex = tools.Max(startIndex-3000, 0)
 				}
-			} else {
-				log.Infof("Cycle %d - Adding %d blocks to the database", cycle, len(hashesToSelectedTip))
 			}
 
 			totalToAdd := len(hashesToSelectedTip) - startIndex
+			log.Infof("Cycle %d - Adding %d blocks to the database", cycle, totalToAdd)
 
 			for i := startIndex; i < len(hashesToSelectedTip); i++ {
 				hash := hashesToSelectedTip[i]
@@ -306,14 +315,14 @@ func (p *Processing) ResyncDatabase() error {
 				if err != nil {
 					return err
 				}
-				if p.config.Resync || i-startIndex >= 6000 {
-					err = p.processBlock(databaseTransaction, block)
+				if !p.config.Resync && i-startIndex >= 1000 {
+					err = p.processBlock(databaseTransaction, block, FailOnMissingData)
 					// Some edge cases close to the end of hashesToSelectedTip range may trigger missing dependencies
 					if err != nil {
-						err = p.processBlockAndDependencies(databaseTransaction, block)
+						err = p.processBlockAndDependencies(databaseTransaction, block, true)
 					}
 				} else {
-					err = p.processBlockAndDependencies(databaseTransaction, block)
+					err = p.processBlockAndDependencies(databaseTransaction, block, true)
 				}
 				if err != nil {
 					return err
@@ -428,7 +437,7 @@ outer:
 			}
 		}
 
-		hashes, err := hashesFromStrings(getBlocks.BlockHashes)
+		hashes, err := block.HashesFromStrings(getBlocks.BlockHashes)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -504,7 +513,7 @@ func (p *Processing) resyncVirtualSelectedParentChain(databaseTransaction *pg.Tx
 			VirtualSelectedParentChainChanges: changes,
 		}
 		if withDependencies {
-			err = p.processBlockAndDependencies(databaseTransaction, virtualSelectedParentBlock)
+			err = p.processBlockAndDependencies(databaseTransaction, virtualSelectedParentBlock, true)
 			if err != nil {
 				return err
 			}
@@ -575,7 +584,7 @@ func (p *Processing) getVirtualSelectedParentChainChanges(startHash *externalapi
 
 // getHashesUntil returns all the block hashes which are not higher than the stop block in terms of DAA score
 func (p *Processing) getHashesUntil(blockHashes []string, stopBlock *block.Block) ([]*externalapi.DomainHash, error) {
-	hashes, err := hashesFromStrings(blockHashes)
+	hashes, err := block.HashesFromStrings(blockHashes)
 	if err != nil {
 		return nil, err
 	}
@@ -654,20 +663,22 @@ func (p *Processing) getHashesUntil(blockHashes []string, stopBlock *block.Block
 	return hashes, nil
 }
 
-func (p *Processing) ProcessBlockAndDependencies(block *block.Block) error {
+func (p *Processing) ProcessBlockAndDependencies(block *block.Block, includeMergeSets bool) error {
 	p.Lock()
 	defer p.Unlock()
 
 	return p.database.RunInTransaction(func(databaseTransaction *pg.Tx) error {
-		return p.processBlockAndDependencies(databaseTransaction, block)
+		return p.processBlockAndDependencies(databaseTransaction, block, includeMergeSets)
 	})
 }
 
 // processBlockAndDependencies processes `block` and all its missing dependencies
-func (p *Processing) processBlockAndDependencies(databaseTransaction *pg.Tx, block *block.Block) error {
+// On missing deps during processing, we just report the missing part in the logs
+// and process the block with the available information.
+func (p *Processing) processBlockAndDependencies(databaseTransaction *pg.Tx, block *block.Block, includeMergeSets bool) error {
 
 	batch := batch.New(p.database, p.rpcClient, p.syncBlock)
-	err := batch.CollectBlockAndDependencies(databaseTransaction, block)
+	err := batch.CollectBlockAndDependencies(databaseTransaction, block, includeMergeSets)
 	if err != nil {
 		return err
 	}
@@ -680,7 +691,7 @@ func (p *Processing) processBlockAndDependencies(databaseTransaction *pg.Tx, blo
 
 		// Process missing dependency block
 		log.Warnf("Handling missing dependency block #%d %s", i, ba.Hash())
-		err = p.processBlock(databaseTransaction, ba.Block)
+		err = p.processBlock(databaseTransaction, ba.Block, ReportMissingData)
 		if err != nil {
 			return err
 		}
@@ -690,7 +701,7 @@ func (p *Processing) processBlockAndDependencies(databaseTransaction *pg.Tx, blo
 	if len(ordered) > 1 {
 		log.Warnf("Handling block %s after its missing dependencies (%d)", block.Hash, len(ordered)-1)
 	}
-	err = p.processBlock(databaseTransaction, block)
+	err = p.processBlock(databaseTransaction, block, ReportMissingData)
 	if err != nil {
 		return err
 	}
@@ -698,15 +709,15 @@ func (p *Processing) processBlockAndDependencies(databaseTransaction *pg.Tx, blo
 	return nil
 }
 
-func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *block.Block) error {
-	log.Debugf("Processing block %s", block.Hash)
-	defer log.Debugf("Finished processing block %s", block.Hash)
+func (p *Processing) processBlock(databaseTransaction *pg.Tx, newBlock *block.Block, missingDataPolicy MissingDataPolicy) error {
+	log.Debugf("Processing block %s", newBlock.Hash)
+	defer log.Debugf("Finished processing block %s", newBlock.Hash)
 
 	isIncompleteBlock := false
-	blockExists, err := p.database.DoesBlockExist(databaseTransaction, block.Hash)
+	blockExists, err := p.database.DoesBlockExist(databaseTransaction, newBlock.Hash)
 	if err != nil {
 		// enhanced error description
-		return errors.Wrapf(err, "Could not check if block %s does exist in database", block.Hash)
+		return errors.Wrapf(err, "Could not check if block %s does exist in database", newBlock.Hash)
 	}
 	if !blockExists {
 		var selectedParentID *uint64
@@ -715,58 +726,81 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *block.Block
 		mergeSetRedIDs := make([]uint64, 0)
 		mergeSetBlueIDs := make([]uint64, 0)
 		// If the block is located below the sync point, ignore its parents and merge sets
-		if !block.IsPlaceholder {
-			selectedParentID, err = p.GetSelectedParentID(databaseTransaction, block)
+		if !newBlock.IsPlaceholder {
+			selectedParentID, err = p.GetSelectedParentID(databaseTransaction, newBlock)
 			if err != nil {
-				return errors.Wrapf(err, "Could not get id of selected parent block %s", block.Rpc.VerboseData.SelectedParentHash)
+				return errors.Wrapf(err, "Could not get id of selected parent block %s", newBlock.Rpc.VerboseData.SelectedParentHash)
 			}
 
-			parentHashes := block.Domain.Header.DirectParents()
+			parentHashes := newBlock.Domain.Header.DirectParents()
 			existingParentHashes := make([]*externalapi.DomainHash, 0, len(parentHashes))
 			for _, parentHash := range parentHashes {
 				parentExists, err := p.database.DoesBlockExist(databaseTransaction, parentHash)
 				if err != nil {
 					// enhanced error description
-					return errors.Wrapf(err, "Could not check if parent %s for block %s does exist in database", parentHash, block.Hash)
+					return errors.Wrapf(err, "Could not check if parent %s for block %s does exist in database", parentHash, newBlock.Hash)
 				}
 				if !parentExists {
-					log.Warnf("Parent %s for block %s does not exist in the database", parentHash, block.Hash)
-					isIncompleteBlock = true
-					continue
+					switch missingDataPolicy {
+					case ReportMissingData:
+						log.Warnf("Parent %s for block %s does not exist in the database", parentHash, newBlock.Hash)
+						isIncompleteBlock = true
+						continue
+
+					case FailOnMissingData:
+						return errors.Wrapf(err, "Block processing error: Parent %s for block %s does not exist in the database", parentHash, newBlock.Hash)
+					}
 				}
 				existingParentHashes = append(existingParentHashes, parentHash)
 			}
 
 			parentIDs, parentHeights, err = p.database.BlockIDsAndHeightsByHashes(databaseTransaction, existingParentHashes)
 			if err != nil {
-				return errors.Errorf("Could not resolve parent IDs for block %s: %s", block.Hash, err)
+				return errors.Errorf("Could not resolve parent IDs for block %s: %s", newBlock.Hash, err)
 			}
 
 			// Some edge cases can trigger missing merge sets blocks, particularly blocks in the close future
 			// of the sync block merging blocks located deeper than the sync block in terms of DAA score
 
-			mergeSetReds, err := hashesFromStrings(block.Rpc.VerboseData.MergeSetRedsHashes)
+			mergeSetReds, err := block.HashesFromStrings(newBlock.Rpc.VerboseData.MergeSetRedsHashes)
 			if err != nil {
 				return err
 			}
 			var missingReds []*externalapi.DomainHash
 			mergeSetRedIDs, missingReds = p.database.HashesToBlockIDs(databaseTransaction, mergeSetReds)
 			if len(missingReds) > 0 {
-				log.Errorf("Could not get mergeset reds ids for block %s: %s", block.Hash, missingReds)
+				switch missingDataPolicy {
+				case ReportMissingData:
+					log.Errorf("Could not get mergeset reds ids for block %s: %s", newBlock.Hash, missingReds)
+					isIncompleteBlock = true
+
+				case FailOnMissingData:
+					return errors.Wrapf(err, "Block processing error: Could not get mergeset reds ids for block %s: %s", newBlock.Hash, missingReds)
+				}
 			}
 
-			mergeSetBlues, err := hashesFromStrings(block.Rpc.VerboseData.MergeSetBluesHashes)
+			mergeSetBlues, err := block.HashesFromStrings(newBlock.Rpc.VerboseData.MergeSetBluesHashes)
 			if err != nil {
 				return err
 			}
 			var missingBlues []*externalapi.DomainHash
 			mergeSetBlueIDs, missingBlues = p.database.HashesToBlockIDs(databaseTransaction, mergeSetBlues)
 			if len(missingBlues) > 0 {
-				log.Errorf("Could not get mergeset blues ids for block %s: %s", block.Hash, missingBlues)
+				switch missingDataPolicy {
+				case ReportMissingData:
+					log.Errorf("Could not get mergeset blues ids for block %s: %s", newBlock.Hash, missingBlues)
+					isIncompleteBlock = true
+
+				case FailOnMissingData:
+					return errors.Wrapf(err, "Block processing error: Could not get mergeset blues ids for block %s: %s", newBlock.Hash, missingBlues)
+				}
 			}
 		}
 
 		blockHeight := uint64(0)
+		if newBlock.IsGenesis() {
+			blockHeight = 1
+		}
 		for _, height := range parentHeights {
 			blockHeight = tools.Max(blockHeight, height+1)
 		}
@@ -774,13 +808,13 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *block.Block
 		heightGroupSize, err := p.database.HeightGroupSize(databaseTransaction, blockHeight)
 		if err != nil {
 			// enhanced error description
-			return errors.Wrapf(err, "Could not resolve group size for highest parent height %d for block %s", blockHeight, block.Hash)
+			return errors.Wrapf(err, "Could not resolve group size for highest parent height %d for block %s", blockHeight, newBlock.Hash)
 		}
 		blockHeightGroupIndex := heightGroupSize
 
 		databaseBlock := &model.Block{
-			BlockHash:                      block.Hash.String(),
-			Timestamp:                      block.Domain.Header.TimeInMilliseconds(),
+			BlockHash:                      newBlock.Hash.String(),
+			Timestamp:                      newBlock.Domain.Header.TimeInMilliseconds(),
 			ParentIDs:                      parentIDs,
 			Height:                         blockHeight,
 			HeightGroupIndex:               blockHeightGroupIndex,
@@ -789,11 +823,11 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *block.Block
 			IsInVirtualSelectedParentChain: false,
 			MergeSetRedIDs:                 mergeSetRedIDs,
 			MergeSetBlueIDs:                mergeSetBlueIDs,
-			DAAScore:                       block.Domain.Header.DAAScore(),
+			DAAScore:                       newBlock.Domain.Header.DAAScore(),
 		}
-		err = p.database.InsertBlock(databaseTransaction, block.Hash, databaseBlock)
+		err = p.database.InsertBlock(databaseTransaction, newBlock.Hash, databaseBlock)
 		if err != nil {
-			return errors.Wrapf(err, "Could not insert block %s", block.Hash)
+			return errors.Wrapf(err, "Could not insert block %s", newBlock.Hash)
 		}
 		blockID := databaseBlock.ID
 
@@ -804,7 +838,7 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *block.Block
 		err = p.database.InsertOrUpdateHeightGroup(databaseTransaction, heightGroup)
 		if err != nil {
 			// enhanced error description
-			return errors.Wrapf(err, "Could not insert or update height group %d for block %s", blockHeight, block.Hash)
+			return errors.Wrapf(err, "Could not insert or update height group %d for block %s", blockHeight, newBlock.Hash)
 		}
 
 		for i, parentID := range parentIDs {
@@ -812,7 +846,7 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *block.Block
 			parentHeightGroupIndex, err := p.database.BlockHeightGroupIndex(databaseTransaction, parentID)
 			if err != nil {
 				// enhanced error description
-				return errors.Wrapf(err, "Could not get height group index of parent id %d for block %s", parentID, block.Hash)
+				return errors.Wrapf(err, "Could not get height group index of parent id %d for block %s", parentID, newBlock.Hash)
 			}
 			edge := &model.Edge{
 				FromBlockID:          blockID,
@@ -825,15 +859,17 @@ func (p *Processing) processBlock(databaseTransaction *pg.Tx, block *block.Block
 			err = p.database.InsertEdge(databaseTransaction, edge)
 			if err != nil {
 				// enhanced error description
-				return errors.Wrapf(err, "Could not insert edge from block %s to parent id %d", block.Hash, parentID)
+				return errors.Wrapf(err, "Could not insert edge from block %s to parent id %d", newBlock.Hash, parentID)
 			}
 		}
 	} else {
-		log.Debugf("Block %s already exists in database; not processed", block.Hash)
+		log.Debugf("Block %s already exists in database; not processed", newBlock.Hash)
 	}
 
-	if block.Rpc.VerboseData.IsHeaderOnly || isIncompleteBlock {
-		log.Infof("Block %s is incomplete but was processed nevertheless", block.Hash)
+	if isIncompleteBlock {
+		log.Infof("Block %s is incomplete but has been processed anyway", newBlock.Hash)
+	} else if newBlock.Rpc.VerboseData.IsHeaderOnly {
+		log.Infof("Block %s is header only but has been processed anyway", newBlock.Hash)
 	}
 
 	return nil
@@ -844,7 +880,7 @@ func (p *Processing) processMissingBlock(databaseTransaction *pg.Tx, blockHash *
 	if err != nil {
 		return 0, err
 	}
-	err = p.processBlockAndDependencies(databaseTransaction, block)
+	err = p.processBlockAndDependencies(databaseTransaction, block, true)
 	if err != nil {
 		return 0, err
 	}
@@ -871,18 +907,6 @@ func (p *Processing) GetSelectedParentID(databaseTransaction *pg.Tx, block *bloc
 		*id = selectedParentID
 	}
 	return id, nil
-}
-
-func hashesFromStrings(strs []string) ([]*externalapi.DomainHash, error) {
-	hashes := make([]*externalapi.DomainHash, len(strs))
-	for i, str := range strs {
-		var err error
-		hashes[i], err = externalapi.NewDomainHashFromString(str)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return hashes, nil
 }
 
 func (p *Processing) ProcessVirtualChange(blockInsertionResult *externalapi.VirtualChangeSet) error {
@@ -950,7 +974,7 @@ func (p *Processing) processVirtualChange(databaseTransaction *pg.Tx, blockInser
 			return err
 		}
 
-		blueHashes, err := hashesFromStrings(rpcBlock.Block.VerboseData.MergeSetBluesHashes)
+		blueHashes, err := block.HashesFromStrings(rpcBlock.Block.VerboseData.MergeSetBluesHashes)
 		if err != nil {
 			return err
 		}
@@ -964,7 +988,7 @@ func (p *Processing) processVirtualChange(databaseTransaction *pg.Tx, blockInser
 			}
 		}
 
-		redHashes, err := hashesFromStrings(rpcBlock.Block.VerboseData.MergeSetRedsHashes)
+		redHashes, err := block.HashesFromStrings(rpcBlock.Block.VerboseData.MergeSetRedsHashes)
 		if err != nil {
 			return err
 		}
@@ -988,23 +1012,18 @@ func (p *Processing) processVirtualChange(databaseTransaction *pg.Tx, blockInser
 	return p.database.UpdateBlockColors(databaseTransaction, blockColors)
 }
 
-// Get a map of DAA Scores associated to database block ids.
-// The blocks are retrieved from the DAG by hash.
-// Their DAG DAA score is then associated to their id in the database.
-// Only matching DAG and database blocks are added to the returned map.
-func (p *Processing) getBlocksDAAScores(databaseTransaction *pg.Tx, blockHashes []*externalapi.DomainHash) (map[uint64]uint64, error) {
-	results := make(map[uint64]uint64)
-	for _, blockHash := range blockHashes {
-		block, err := p.rpcClient.GetBlock(blockHash.String(), false)
-		if err != nil {
-			return nil, err
-		}
+type MissingDataPolicy int
 
-		blockID, err := p.database.BlockIDByHash(databaseTransaction, blockHash)
-		// We ignore non-existing blocks in the database
-		if err == nil {
-			results[blockID] = block.Block.Header.DAAScore
-		}
-	}
-	return results, nil
+const (
+	ReportMissingData MissingDataPolicy = iota
+	FailOnMissingData
+)
+
+var missingDataPolicyName = map[MissingDataPolicy]string{
+	ReportMissingData: "report",
+	FailOnMissingData: "fail",
+}
+
+func (ss MissingDataPolicy) String() string {
+	return missingDataPolicyName[ss]
 }

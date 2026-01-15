@@ -21,6 +21,16 @@ type Block struct {
 	MergeSetBlueIDs                []uint64 `pg:"merge_set_blue_ids,use_zero"`
 }
 
+// A placeholder block is used to map a block hash to an id for a node block that could not
+// or was not intended to be synced with the database.
+//
+// A placeholder block has no parents, no selected parent and no blue and red merge sets.
+//
+// A placeholder block height is always zero. The height of a synced block is always greater than zero.
+func (b *Block) IsPlaceholder() bool {
+	return b.Height == 0
+}
+
 type Edge struct {
 	FromBlockID          uint64 `pg:"from_block_id,pk"`
 	ToBlockID            uint64 `pg:"to_block_id,pk"`
