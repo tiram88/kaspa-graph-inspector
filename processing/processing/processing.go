@@ -66,7 +66,7 @@ func NewProcessing(config *configPackage.Config,
 }
 
 func (p *Processing) init() error {
-	err := p.updateRpcClientVersion()
+	err := p.updateRpcClientVersionAndNetwork()
 	if err != nil {
 		return err
 	}
@@ -172,12 +172,24 @@ func (p *Processing) initConsensusEventsHandler() error {
 	return nil
 }
 
-func (p *Processing) updateRpcClientVersion() error {
+func (p *Processing) updateRpcClientVersionAndNetwork() error {
 	info, err := p.rpcClient.GetInfo()
 	if err != nil {
 		return err
 	}
 	p.appConfig.KaspadVersion = info.ServerVersion
+
+	dagInfo, err := p.rpcClient.GetBlockDAGInfo()
+	if err != nil {
+		return err
+	}
+	p.appConfig.Network = dagInfo.NetworkName
+
+	log.Infof("Node network %s", p.appConfig.Network)
+	if p.config.NetName != p.appConfig.Network {
+		return errors.Errorf("The network requested by command line arguments (%s) and the kaspa node network (%s) do not match", p.config.NetName, p.appConfig.Network)
+	}
+
 	return nil
 }
 
