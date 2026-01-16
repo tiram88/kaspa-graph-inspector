@@ -2,30 +2,56 @@
 
 set -e
 
-export KGI_RPCSERVER=${KGI_RPCSERVER-"localhost"}
+######
+# DB #
+######
+
 export POSTGRES_USER=${POSTGRES_USER-postgres}
 export POSTGRES_PASSWORD=${POSTGRES_PASSWORD-postgres}
 export POSTGRES_DB=${POSTGRES_DB-postgres}
-export API_ADDRESS=${API_ADDRESS-"localhost"}
-export KATNIP_ADDRESS=${KATNIP_ADDRESS-explorer.kaspa.org}
-export API_PORT=${API_PORT-4575}
-export WEB_PORT=${WEB_PORT-8080}
-export KASPAD_VERSION=${KASPAD_VERSION-increased-route-capacity-20000}
-export KASPAD_REPOSITORY=${KASPAD_REPOSITORY-github.com/someone235/kaspad}
-export KASPA_LIVE_ADDRESS=${KASPA_LIVE_ADDRESS-kaspa.live}
-export REACT_APP_EXPLORER_ADDRESS=${REACT_APP_EXPLORER_ADDRESS-explorer.kaspa.org}
+export POSTGRES_HOST=${POSTGRES_HOST-"localhost"}
+export POSTGRES_PORT=${POSTGRES_PORT-"5433"}
+
+##############
+# Processing #
+##############
+
+export KASPAD_REPOSITORY=${KASPAD_REPOSITORY-"github.com/kaspanet/kaspad"}
+export KASPAD_VERSION=${KASPAD_VERSION-"latest"}
+export KGI_RPCSERVER=${KGI_RPCSERVER-"localhost"}
+export KGI_NETWORK=${KGI_NETWORK-""} # accepted values ["", "testnet", "simnet", "devnet"]
+export KGI_NETWORK_SUFFIX=${KGI_NETWORK_SUFFIX-""} # accepted values: number, only if KGI_NETWORK=="testnet"
 export KGI_POSTGRES_MOUNT=${KGI_POSTGRES_MOUNT-"~/.kgi-postgres"}
+
+#######
+# API #
+#######
+
+export API_ADDRESS=${API_ADDRESS-"localhost"}
+# provide a public host or ip for a deployment (ie: "kaspa.live")
+export API_PORT=${API_PORT-"4575"}
+
+#######
+# Web #
+#######
+
+export KASPA_LIVE_ADDRESS=${KASPA_LIVE_ADDRESS-"kaspa.live"}
+# provide a public host or ip for a deployment (ie: "kaspa.live")
+export WEB_PORT=${WEB_PORT-"8080"}
+export EXPLORER_ADDRESS=${EXPLORER_ADDRESS-"explorer.kaspa.org"}
+
 
 # Verify that all the required environment variables are set
 declare -A REQUIRED_VARIABLES
 REQUIRED_VARIABLES["POSTGRES_USER"]="${POSTGRES_USER}"
 REQUIRED_VARIABLES["POSTGRES_PASSWORD"]="${POSTGRES_PASSWORD}"
 REQUIRED_VARIABLES["POSTGRES_DB"]="${POSTGRES_DB}"
+REQUIRED_VARIABLES["POSTGRES_HOST"]="${POSTGRES_HOST}"
+REQUIRED_VARIABLES["POSTGRES_PORT"]="${POSTGRES_PORT}"
+REQUIRED_VARIABLES["KASPAD_VERSION"]="${KASPAD_VERSION}"
 REQUIRED_VARIABLES["API_ADDRESS"]="${API_ADDRESS}"
-REQUIRED_VARIABLES["KATNIP_ADDRESS"]="${KATNIP_ADDRESS}"
 REQUIRED_VARIABLES["API_PORT"]="${API_PORT}"
 REQUIRED_VARIABLES["WEB_PORT"]="${WEB_PORT}"
-REQUIRED_VARIABLES["KASPAD_VERSION"]="${KASPAD_VERSION}"
 REQUIRED_VARIABLES["KASPA_LIVE_ADDRESS"]="${KASPA_LIVE_ADDRESS}"
 
 REQUIRED_VARIABLE_NOT_SET=false
@@ -43,6 +69,19 @@ if [ true = "${REQUIRED_VARIABLE_NOT_SET}" ]; then
     echo "${REQUIRED_VARIABLE_NAME}"
   done
   exit 1
+fi
+
+# Check the processing network variables and create KGI_NETWORK_ARGS based on those
+if [ "testnet" == "${KGI_NETWORK}" ]; then
+  if [ -z "${KGI_NETWORK_SUFFIX}" ]; then
+    echo "On testnet, the network suffix is mandatory. Set KGI_NETWORK_SUFFIX"
+    exit 1
+  fi
+  export KGI_NETWORK_ARGS=${KGI_NETWORK_ARGS-"--testnet --netsuffix=${KGI_NETWORK_SUFFIX}"}
+elif [ "simnet"  == "${KGI_NETWORK}" ]; then
+  export KGI_NETWORK_ARGS=${KGI_NETWORK_ARGS-"--simnet"}
+elif [ "devnet"  == "${KGI_NETWORK}" ]; then
+  export KGI_NETWORK_ARGS=${KGI_NETWORK_ARGS-"--devnet"}
 fi
 
 # Build kaspa-graph-inspector

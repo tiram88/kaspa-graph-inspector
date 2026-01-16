@@ -7,7 +7,7 @@ declare -A REQUIRED_VARIABLES
 REQUIRED_VARIABLES["KASPAD_VERSION"]="${KASPAD_VERSION}"
 REQUIRED_VARIABLES["API_ADDRESS"]="${API_ADDRESS}"
 REQUIRED_VARIABLES["API_PORT"]="${API_PORT}"
-REQUIRED_VARIABLES["KATNIP_ADDRESS"]="${KATNIP_ADDRESS}"
+REQUIRED_VARIABLES["EXPLORER_ADDRESS"]="${EXPLORER_ADDRESS}"
 REQUIRED_VARIABLES["KASPA_LIVE_ADDRESS"]="${KASPA_LIVE_ADDRESS}"
 
 REQUIRED_VARIABLE_NOT_SET=false
@@ -28,13 +28,13 @@ if [ true = "${REQUIRED_VARIABLE_NOT_SET}" ]; then
 fi
 
 # Build processing
-docker build -f processing/Dockerfile -t kaspa-graph-inspector-processing:latest --build-arg KASPAD_VERSION="${KASPAD_VERSION}" --build-arg KASPAD_REPOSITORY="${KASPAD_REPOSITORY}" processing
+docker build -f processing/Dockerfile --network=host -t kaspa-graph-inspector-processing:latest --build-arg KASPAD_VERSION="${KASPAD_VERSION}" --build-arg KASPAD_REPOSITORY="${KASPAD_REPOSITORY}" processing
 
 # Build api
-docker build -f api/Dockerfile -t kaspa-graph-inspector-api:latest api
+docker build -f api/Dockerfile --network=host -t kaspa-graph-inspector-api:latest api
 
 # Build web
 REACT_APP_API_ADDRESS="${API_ADDRESS}:${API_PORT}"
-REACT_APP_KATNIP_ADDRESS="${KATNIP_ADDRESS}"
+REACT_APP_EXPLORER_ADDRESS="${EXPLORER_ADDRESS}"
 REACT_APP_KASPA_LIVE_ADDRESS="${KASPA_LIVE_ADDRESS}"
-docker build -f web/Dockerfile --build-arg REACT_APP_API_ADDRESS="${REACT_APP_API_ADDRESS}" --build-arg REACT_APP_KATNIP_ADDRESS="${REACT_APP_KATNIP_ADDRESS}" --build-arg REACT_APP_KASPA_LIVE_ADDRESS="${REACT_APP_KASPA_LIVE_ADDRESS}" --build-arg REACT_APP_EXPLORER_ADDRESS=explorer.kaspa.org -t kaspa-graph-inspector-web:latest web
+docker build -f web/Dockerfile --network=host --build-arg REACT_APP_API_ADDRESS="${REACT_APP_API_ADDRESS}" --build-arg REACT_APP_KASPA_LIVE_ADDRESS="${REACT_APP_KASPA_LIVE_ADDRESS}" --build-arg REACT_APP_EXPLORER_ADDRESS=${REACT_APP_EXPLORER_ADDRESS} -t kaspa-graph-inspector-web:latest web
