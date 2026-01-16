@@ -226,6 +226,21 @@ func (db *Database) BlockIDsByHashes(databaseTransaction *pg.Tx, blockHashes []*
 	return blockIDs, nil
 }
 
+// HashesToBlockIDs returns an arrays of ids for `blockHashes` hashes and 
+// all the hashes having no matching ID.
+func (db *Database) HashesToBlockIDs(databaseTransaction *pg.Tx, blockHashes []*externalapi.DomainHash) ([]uint64, []*externalapi.DomainHash) {
+	blockIDs := make([]uint64, len(blockHashes))
+	notFound := make([]*externalapi.DomainHash, 0)
+	for i, blockHash := range blockHashes {
+		blockID, err := db.BlockIDByHash(databaseTransaction, blockHash)
+		if err != nil {
+			notFound = append(notFound, blockHash)
+		}
+		blockIDs[i] = blockID
+	}
+	return blockIDs, notFound
+}
+
 // BlockIDsAndHeightsByHashes returns two arrays, one of ids and one of heights
 // for `blockHashes` hashes
 func (db *Database) BlockIDsAndHeightsByHashes(databaseTransaction *pg.Tx, blockHashes []*externalapi.DomainHash) ([]uint64, []uint64, error) {
