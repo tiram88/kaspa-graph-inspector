@@ -4,13 +4,14 @@ kaspa-graph-inspector
 KGI is comprised of four components:
 
 * A postgres database
-* A `processing` kaspa node (this is simply a kaspad wrapped in some extra logic)
+* A `processing` server connected to a kaspa node via gRPC
 * An `api` REST server
 * A `web` server
 
 How the components interact:
 
-* The `processing` node connects to the Kaspa network the same way a regular kaspad node does and starts syncing just as a kaspad node would
+* The `processing` server connects as a gRPC client to a Kaspa node
+* It queries all blocks since the pruning point and subscribes to all block added and VSPC changes
 * While it's syncing, it writes metadata about every block to the postgres database
 * From the other end, the `web` server listens to http requests on some port
 * When a user navigates their browser to that port, the `web` server serves the KGI clientside logic, which includes the UI
@@ -26,15 +27,13 @@ For development, it's recommended to run KGI from within Docker
 1. Make sure you have docker installed by running `docker --version`
 2. Make sure you have docker-compose installed by running `docker-compose --version`
 3. Define the following environment variables:
-   1. POSTGRES_USER=username
-   2. POSTGRES_PASSWORD=password
-   3. POSTGRES_DB=database-name
-   4. API_ADDRESS=localhost
-   5. KATNIP_ADDRESS=localhost
-   6. API_PORT=4575
-   7. WEB_PORT=8080
-   8. KASPAD_VERSION=4a560f25a60e876b58d2643ca6eb7e07525e76cc (this can be either a specific kaspda commit hash or a kaspad tag)
-   9. KASPA_LIVE_ADDRESS=localhost
+   1. POSTGRES_PORT=5433
+   2. KGI_NETWORK=testnet - accepted values ["", "testnet", "simnet", "devnet"]
+   3. KGI_NETWORK_SUFFIX=12 - only if KGI_NETWORK=="testnet"
+   4. API_PORT=4575
+   5. WEB_PORT=8080
+   6. KASPA_LIVE_ADDRESS=localhost
+   7. EXPLORER_ADDRESS=explorer.kaspa.org - adapt to the network type
 4. Run: `./docker-run.sh`
 
 Deployment
@@ -56,9 +55,9 @@ Deployment
    1. Make sure the nodejs build environment is set up by running `npm version`
    2. Within the `web` directory, run: `npm install`
    3. Set the following environment variables:
-      1. REACT_APP_API_ADDRESS=example.com:1234 (this is the public address of where your `api` server will be)
-      2. REACT_APP_EXPLORER_ADDRESS=explorer.kaspa.org
-      3. REACT_APP_KASPA_LIVE_ADDRESS=kaspa.live
+      1. REACT_APP_API_ADDRESS=example.com:1234 - this is the public address of where your `api` server will be
+      2. REACT_APP_EXPLORER_ADDRESS=explorer.kaspa.org - this is the address of a public explorer able to display block properties
+      3. REACT_APP_KASPA_LIVE_ADDRESS=kaspa.live - this is the public address of where your `web` server will be
    4. Within the `web` directory, run: `npm run build`
    5. Copy the entire `web` directory to wherever you wish to run the `web` server from
 5. Run `processing`
@@ -69,7 +68,9 @@ Deployment
       3. POSTGRES_DB=database-name
       4. POSTGRES_HOST=database.example.com
       5. POSTGRES_PORT=5432
-   3. Run: `kgi-processing --connection-string=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable`
+      6. KGI_RPCSERVER=localhost
+      7. KGI_NETWORK_ARGS="--testnet --netsuffix=12" (optional) - this defines the network type (so leave it undefined/unset for mainnet)
+   3. Run: `kgi-processing --connection-string=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable --rpcserver=${KGI_RPCSERVER} ${KGI_NETWORK_ARGS}`
 6. Run `api`
    1. Navigate to wherever you copied `api` to
    2. Set the following environment variables:

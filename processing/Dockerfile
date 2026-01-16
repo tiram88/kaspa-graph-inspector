@@ -10,7 +10,7 @@ WORKDIR /build
 COPY ./go.mod .
 COPY ./go.sum .
 
-ARG KASPAD_VERSION=v0.12.22
+ARG KASPAD_VERSION='latest'
 
 # Exit if KASPAD_VERSION is not set
 RUN if [ -z "${KASPAD_VERSION}" ]; then exit 1; fi

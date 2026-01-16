@@ -6,8 +6,10 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
     user: root
-    network_mode: host
+    #network_mode: host
 
   persistent-postgres:
     image: "postgres:13.2"
@@ -15,19 +17,19 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
     user: root
-    network_mode: host
+    #network_mode: host
     volumes:
       - ${KGI_POSTGRES_MOUNT:-/tmp/kgi-postgres-mount}:/var/lib/postgresql/data
 
   processing:
     image: "kaspa-graph-inspector-processing:latest"
     depends_on:
-      - postgres
-    command:
-      - "/app/processing"
-      - "--connection-string=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB}?sslmode=disable"
-      - "--rpcserver=${KGI_RPCSERVER}"
+      - persistent-postgres
+    entrypoint: /bin/sh
+    command: -c "/app/processing --connection-string=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable --rpcserver=${KGI_RPCSERVER} ${KGI_NETWORK_ARGS}"
     network_mode: host
     user: root
     restart: always
@@ -35,11 +37,13 @@ services:
   api:
     image: "kaspa-graph-inspector-api:latest"
     depends_on:
-      - postgres
+      - processing
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
       - API_PORT=${API_PORT}
     command:
       - "npm"
@@ -54,7 +58,7 @@ services:
   web:
     image: "kaspa-graph-inspector-web:latest"
     depends_on:
-      - postgres
+      - api
     command:
       - "serve"
       - "--listen=${WEB_PORT}"
