@@ -47,6 +47,12 @@ export default class BlockSprite extends PIXI.Container {
     private currentText?: PIXI.Text;
     private currentHighlight: PIXI.Graphics;
     private blockClickedListener: (block: Block) => void;
+    // Guards destroy() itself against being run twice, and guards the deferred
+    // .call(() => oldX.destroy()) callbacks below against firing on a child
+    // that was already destroyed as part of a whole-sprite destroy() - see the
+    // long comment on destroy() at the bottom of this file for why that
+    // combination matters.
+    private isDestroyed: boolean = false;
 
     constructor(application: PIXI.Application, block: Block) {
         super();
@@ -181,7 +187,17 @@ export default class BlockSprite extends PIXI.Container {
                     .to({alpha: 1.0}, 300)
                     // destroy(), not removeChild(): oldText's canvas texture is its
                     // own (never shared), so it must be freed once it's off screen.
-                    .call(() => oldText!.destroy());
+                    //
+                    // Guarded by isDestroyed: if this whole BlockSprite gets
+                    // destroy()'d (e.g. it scrolled out of view) before this
+                    // 300ms fade finishes, oldText was already destroyed as
+                    // part of that cascade - destroying it again here would
+                    // throw (PIXI destroy() is not safe to call twice).
+                    .call(() => {
+                        if (!this.isDestroyed) {
+                            oldText!.destroy();
+                        }
+                    });
             }
 
             Tween.get(this.currentSprite)
@@ -190,7 +206,13 @@ export default class BlockSprite extends PIXI.Container {
                 // the default destroy() (texture: false) removes it from the
                 // display tree and frees its own resources without touching the
                 // cached texture that other BlockSprites still rely on.
-                .call(() => oldSprite.destroy());
+                //
+                // Guarded by isDestroyed for the same reason as oldText above.
+                .call(() => {
+                    if (!this.isDestroyed) {
+                        oldSprite.destroy();
+                    }
+                });
         }
     }
 
@@ -206,7 +228,12 @@ export default class BlockSprite extends PIXI.Container {
             if (oldHighlight.alpha > 0.0 && this.highlightContainer.alpha > 0.0) {
                 Tween.get(oldHighlight)
                 .to({alpha: 0.0}, 300)
-                .call(() => oldHighlight.destroy());
+                // Guarded by isDestroyed - see the matching comment in setColor().
+                .call(() => {
+                    if (!this.isDestroyed) {
+                        oldHighlight.destroy();
+                    }
+                });
             } else {
                 this.highlightContainer.removeChildren().forEach(child => child.destroy());
             }
@@ -237,6 +264,20 @@ export default class BlockSprite extends PIXI.Container {
     // this instead of merely removeChild()-ing the sprite, or its Text/Graphics
     // canvases and event listeners are never released.
     //
+    // Idempotency (the isDestroyed guard) matters here specifically because
+    // setColor()/setHighlighted() schedule their own deferred destroy() calls
+    // on the *previous* sprite/text/graphics via a Tween .call() callback, to
+    // let the cross-fade finish first. If the whole BlockSprite is destroyed
+    // while one of those fades is still in flight - entirely normal while
+    // tracking the tip, where a block can change color right before it
+    // scrolls out of the visible range - super.destroy({children: true})
+    // below already destroys that old child as part of the cascade. The
+    // deferred callback firing afterwards would then destroy() it a second
+    // time, which PIXI does not support (it throws) and, left unguarded,
+    // silently corrupts the shared CreateJS tween loop that also drives every
+    // fade-in and position animation - which is what caused the freeze/
+    // disappearing-blocks bug in the previous version of this fix.
+    //
     // { children: true } cascades into spriteContainer/textContainer/
     // highlightContainer and on into their children. We deliberately never pass a
     // `texture`/`baseTexture` option here: each PIXI class's own default handles
@@ -245,6 +286,10 @@ export default class BlockSprite extends PIXI.Container {
     // PIXI.Text and PIXI.Graphics default to destroying their own, never-shared
     // resources.
     destroy = (): void => {
+        if (this.isDestroyed) {
+            return;
+        }
+        this.isDestroyed = true;
         super.destroy({ children: true });
     }
 

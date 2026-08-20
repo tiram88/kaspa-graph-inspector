@@ -85,6 +85,9 @@ export default class EdgeSprite extends PIXI.Container {
 
     private graphicsMap: { [definitionKey: string]: PIXI.Graphics } = {};
     private baseDefinition?: EdgeGraphicsDefinition;
+    // Guards against destroy() being called more than once - see the matching
+    // comment in HeightSprite.ts.
+    private isDestroyed: boolean = false;
 
     constructor(application: PIXI.Application, fromBlockId: number, toBlockId: number) {
         super();
@@ -313,6 +316,10 @@ export default class EdgeSprite extends PIXI.Container {
     // call this instead of merely removeChild()-ing the sprite, or its
     // Graphics geometries and event listeners are never released.
     destroy = (): void => {
+        if (this.isDestroyed) {
+            return;
+        }
+        this.isDestroyed = true;
         super.destroy({ children: true });
     }
 }

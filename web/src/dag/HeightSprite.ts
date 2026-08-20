@@ -37,6 +37,11 @@ export default class HeightSprite extends PIXI.Container {
     private spriteWidth: number = 0;
     private spriteHeight: number = 0;
     private daaScoreClickedListener: (daaScore: number) => void;
+    // Guards against destroy() being called more than once. HeightSprite has
+    // no deferred (tween-callback) destroy of its own today, but this keeps
+    // it consistent and safe with BlockSprite/EdgeSprite and with any future
+    // caller that might destroy() the same instance twice.
+    private isDestroyed: boolean = false;
 
     constructor(application: PIXI.Application, blockHeight: number, daaScore: number, interactive: boolean) {
         super();
@@ -155,6 +160,10 @@ export default class HeightSprite extends PIXI.Container {
     // cached heightTexture(...) and must survive; the owned PIXI.Text in
     // textContainer must not.
     destroy = (): void => {
+        if (this.isDestroyed) {
+            return;
+        }
+        this.isDestroyed = true;
         super.destroy({ children: true });
     }
 }
