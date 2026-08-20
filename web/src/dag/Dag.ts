@@ -1,4 +1,5 @@
 import * as PIXI from "pixi.js-legacy";
+import QuickLRU from "quick-lru";
 import TimelineContainer from "./TimelineContainer";
 import { Block } from "../model/Block";
 import { getBlockChildIds } from "../model/BlocksAndEdgesAndHeightGroups"
@@ -31,7 +32,13 @@ export default class Dag {
     private blockClickedListener: (blockInformation: Block) => void;
     private appConfigChangedListener: (appConfig: AppConfig) => void;
 
-    private readonly blockHashesByIds: { [id: string]: string } = {};
+    // Bounded LRU cache instead of a plain object: a plain object here would
+    // grow forever, since every block ID ever fetched (during panning,
+    // tracking, or searching) got a permanent entry that was never evicted -
+    // a real leak in a page that's meant to stay open indefinitely. 10000
+    // entries comfortably covers several screens' worth of blocks at once
+    // while keeping the cache's footprint bounded.
+    private readonly blockHashesByIds = new QuickLRU<number, string>({ maxSize: 10000 });
 
     constructor(scale: number) {
         this.currentScale = this.getBoundedScale(scale);
@@ -393,7 +400,7 @@ export default class Dag {
 
     private cacheBlockHashes = (blocks: Block[]) => {
         for (let block of blocks) {
-            this.blockHashesByIds[block.id] = block.blockHash;
+            this.blockHashesByIds.set(block.id, block.blockHash);
         }
     }
 
@@ -401,7 +408,7 @@ export default class Dag {
         const foundBlockHashes: string[] = [];
         const notFoundBlockIds: number[] = [];
         for (let blockId of blockIds) {
-            const blockHash = this.blockHashesByIds[blockId];
+            const blockHash = this.blockHashesByIds.get(blockId);
             if (blockHash) {
                 foundBlockHashes.push(blockHash);
             } else {
@@ -446,7 +453,7 @@ export default class Dag {
             if (blockHashesByIds) {
                 for (let blockHashById of blockHashesByIds) {
                     // Feed the cache
-                    this.blockHashesByIds[blockHashById.id] = blockHashById.hash;
+                    this.blockHashesByIds.set(blockHashById.id, blockHashById.hash);
 
                     // Propagate the found hashes
 
