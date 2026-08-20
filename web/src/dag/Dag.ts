@@ -583,7 +583,32 @@ export default class Dag {
 
     stop = () => {
         if (this.application) {
-            this.application.stop();
+            // Stop the head/track polling loop. Clearing the timeout alone
+            // isn't enough: if a tick() call is already in flight (awaiting
+            // this.currentTickFunction()), it would otherwise reschedule
+            // itself once that promise resolves. Setting currentTickId to
+            // undefined makes the `this.currentTickId === currentTickId`
+            // check in tick() fail for that in-flight call, so it won't.
+            window.clearTimeout(this.currentTickId);
+            this.currentTickId = undefined;
+
+            // application.destroy()
+            // properly tears all of that down:
+            //   - destroys the app's own Ticker (removing resizeIfRequired
+            //     for us, since it's a private, non-shared ticker)
+            //   - destroys the renderer and its WebGL context
+            //   - cascades a destroy({children: true}) through the stage,
+            //     which reaches every BlockSprite/HeightSprite/EdgeSprite
+            //     via TimelineContainer; their own destroy() overrides make
+            //     sure that's safe (owned Text/Graphics are freed, shared
+            //     cached block/height textures are left alone)
+            //
+            // removeView is left false: the <canvas> DOM node belongs to
+            // Canvas.tsx (a React ref), so React - not PIXI - should own
+            // removing it from the DOM.
+            this.application.destroy(false, { children: true });
+            this.application = undefined;
+            this.timelineContainer = undefined;
         }
     }
 }
