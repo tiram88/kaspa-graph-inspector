@@ -116,7 +116,10 @@ export default class TimelineContainer extends PIXI.Container {
             .filter(([heightKey, _]) => !heightKeysInBlocks[heightKey])
             .forEach(([heightKey, sprite]) => {
                 delete this.heightKeysToHeightSprites[heightKey];
-                this.heightContainer.removeChild(sprite);
+                // destroy() (not removeChild()) - frees the sprite's owned Text
+                // canvas/GPU texture and detaches it from heightContainer. See
+                // HeightSprite.destroy() for why this is safe to call.
+                sprite.destroy();
             });
 
         // Remove no-longer relevant block sprites
@@ -124,7 +127,8 @@ export default class TimelineContainer extends PIXI.Container {
             .filter(([blockKey, _]) => !this.blockKeysToBlocks[blockKey])
             .forEach(([blockKey, sprite]) => {
                 delete this.blockKeysToBlockSprites[blockKey];
-                this.blockContainer.removeChild(sprite);
+                // destroy() (not removeChild()) - see BlockSprite.destroy().
+                sprite.destroy();
             });
 
 
@@ -133,7 +137,8 @@ export default class TimelineContainer extends PIXI.Container {
             .filter(([edgeKey, _]) => !this.edgeKeysToEdges[edgeKey])
             .forEach(([edgeKey, sprite]) => {
                 delete this.edgeKeysToEdgeSprites[edgeKey];
-                this.edgeContainer.removeChild(sprite);
+                // destroy() (not removeChild()) - see EdgeSprite.destroy().
+                sprite.destroy();
             });
 
         // Update existing block sprites

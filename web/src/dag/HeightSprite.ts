@@ -120,7 +120,12 @@ export default class HeightSprite extends PIXI.Container {
             this.currentTextValue = this.getTextValue();
 
             const text = this.buildText(height, blockSize);
-            this.textContainer.removeChildren();
+            // As in BlockSprite: removeChildren() only detaches the old PIXI.Text,
+            // it doesn't free its canvas texture. This runs on ~every DAA score
+            // change (i.e. essentially every poll tick for on-screen height
+            // sprites), so skipping destroy() here is the single biggest source
+            // of leaked GPU/canvas memory in a long-running session.
+            this.textContainer.removeChildren().forEach(child => child.destroy());
             this.textContainer.addChild(text);
         }
     }
@@ -143,5 +148,13 @@ export default class HeightSprite extends PIXI.Container {
 
     setDAAScoreClickedListener = (daaScoreClickedListener: (daaScore: number) => void) => {
         this.daaScoreClickedListener = daaScoreClickedListener;
+    }
+
+    // See BlockSprite.destroy() for why `texture`/`baseTexture` options are
+    // deliberately omitted: currentSprite's texture comes from the shared,
+    // cached heightTexture(...) and must survive; the owned PIXI.Text in
+    // textContainer must not.
+    destroy = (): void => {
+        super.destroy({ children: true });
     }
 }

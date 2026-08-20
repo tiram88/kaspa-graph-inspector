@@ -306,4 +306,13 @@ export default class EdgeSprite extends PIXI.Container {
     getToBlockId = (): number => {
         return this.toBlockId;
     }
+
+    // Every child here is an owned PIXI.Graphics (never a shared/cached
+    // texture), so a full recursive destroy is always safe. Callers (e.g.
+    // TimelineContainer, when an edge scrolls out of the visible range) must
+    // call this instead of merely removeChild()-ing the sprite, or its
+    // Graphics geometries and event listeners are never released.
+    destroy = (): void => {
+        super.destroy({ children: true });
+    }
 }

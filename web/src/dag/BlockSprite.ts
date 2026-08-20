@@ -140,11 +140,15 @@ export default class BlockSprite extends PIXI.Container {
             this.currentSprite.texture = blockTexture(this.application, blockSize, this.blockColor);
 
             this.currentText = this.buildText(blockSize);
-            this.textContainer.removeChildren();
+            // removeChildren() only detaches the previous PIXI.Text from the display
+            // tree - it does not free the canvas/GPU texture backing it. Explicitly
+            // destroy() every removed child (each PIXI.Text owns its own texture, so
+            // this is always safe here) or it leaks for the lifetime of the tab.
+            this.textContainer.removeChildren().forEach(child => child.destroy());
             this.textContainer.addChild(this.currentText);
 
             const highlight = this.buildHighlight();
-            this.highlightContainer.removeChildren();
+            this.highlightContainer.removeChildren().forEach(child => child.destroy());
             this.highlightContainer.addChild(highlight);
         }
         this.isBlockSizeInitialized = true;
@@ -168,19 +172,25 @@ export default class BlockSprite extends PIXI.Container {
             const oldText = this.currentText;
             this.currentText = this.buildText(this.blockSize);
             if (!oldText) {
-                this.textContainer.removeChildren();
+                this.textContainer.removeChildren().forEach(child => child.destroy());
                 this.textContainer.addChild(this.currentText);
             } else {
                 this.currentText.alpha = 0.0;
                 this.textContainer.addChild(this.currentText);
                 Tween.get(this.currentText)
                     .to({alpha: 1.0}, 300)
-                    .call(() => this.textContainer.removeChild(oldText!));
+                    // destroy(), not removeChild(): oldText's canvas texture is its
+                    // own (never shared), so it must be freed once it's off screen.
+                    .call(() => oldText!.destroy());
             }
 
             Tween.get(this.currentSprite)
                 .to({alpha: 1.0}, 500)
-                .call(() => this.spriteContainer.removeChild(oldSprite));
+                // oldSprite's texture comes from the shared blockTextures cache, so
+                // the default destroy() (texture: false) removes it from the
+                // display tree and frees its own resources without touching the
+                // cached texture that other BlockSprites still rely on.
+                .call(() => oldSprite.destroy());
         }
     }
 
@@ -196,9 +206,9 @@ export default class BlockSprite extends PIXI.Container {
             if (oldHighlight.alpha > 0.0 && this.highlightContainer.alpha > 0.0) {
                 Tween.get(oldHighlight)
                 .to({alpha: 0.0}, 300)
-                .call(() => this.highlightContainer.removeChild(oldHighlight));
+                .call(() => oldHighlight.destroy());
             } else {
-                this.highlightContainer.removeChildren();
+                this.highlightContainer.removeChildren().forEach(child => child.destroy());
             }
 
             this.currentHighlight = this.buildHighlight();
@@ -220,6 +230,22 @@ export default class BlockSprite extends PIXI.Container {
 
     setBlockClickedListener = (blockClickedListener: (block: Block) => void) => {
         this.blockClickedListener = blockClickedListener;
+    }
+
+    // destroy() frees every PIXI resource this BlockSprite owns. Callers (e.g.
+    // TimelineContainer, when a block scrolls out of the visible range) must call
+    // this instead of merely removeChild()-ing the sprite, or its Text/Graphics
+    // canvases and event listeners are never released.
+    //
+    // { children: true } cascades into spriteContainer/textContainer/
+    // highlightContainer and on into their children. We deliberately never pass a
+    // `texture`/`baseTexture` option here: each PIXI class's own default handles
+    // it correctly - PIXI.Sprite defaults to NOT destroying its texture (so the
+    // shared, cached blockTexture(...) used by currentSprite survives), while
+    // PIXI.Text and PIXI.Graphics default to destroying their own, never-shared
+    // resources.
+    destroy = (): void => {
+        super.destroy({ children: true });
     }
 
     private getHighlightFrame = (): HighlightFrame => {
