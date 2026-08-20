@@ -441,6 +441,21 @@ export default class TimelineContainer extends PIXI.Container {
     }
 
     private updateEdgeSprite = (edgeSprite: EdgeSprite, blockSize: number, margin: number, fromX: number, toX: number, fromY: number, toY: number) => {
+        // This is the single choke point for all edge position updates,
+        // including the delayed one below: the 500ms position tween at the
+        // bottom of recalculateEdgeSpritePositions() targets a throwaway
+        // {fromY, toY} object (not edgeSprite itself), purely to drive its
+        // onChange callback every frame - so it keeps calling back in here
+        // for up to 500ms after edgeSprite may have been destroy()'d by a
+        // later, unrelated update (e.g. the edge scrolled out of the tracked
+        // window while its position was still animating). Continuing on
+        // would call into a destroyed EdgeSprite's setVector(), which
+        // touches already-destroyed PIXI.Graphics objects and throws -
+        // taking down the shared CreateJS tween loop with it.
+        if (edgeSprite.isDestroyed) {
+            return;
+        }
+
         const vectorX = toX - fromX;
         const vectorY = toY - fromY;
         const {

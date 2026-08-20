@@ -37,11 +37,10 @@ export default class HeightSprite extends PIXI.Container {
     private spriteWidth: number = 0;
     private spriteHeight: number = 0;
     private daaScoreClickedListener: (daaScore: number) => void;
-    // Guards against destroy() being called more than once. HeightSprite has
-    // no deferred (tween-callback) destroy of its own today, but this keeps
-    // it consistent and safe with BlockSprite/EdgeSprite and with any future
-    // caller that might destroy() the same instance twice.
-    private isDestroyed: boolean = false;
+    // Guards against destroy() being called more than once, and lets external
+    // callers (e.g. TimelineContainer) check before acting on a sprite that
+    // may have been destroyed since they last touched it.
+    public isDestroyed: boolean = false;
 
     constructor(application: PIXI.Application, blockHeight: number, daaScore: number, interactive: boolean) {
         super();
@@ -164,6 +163,10 @@ export default class HeightSprite extends PIXI.Container {
             return;
         }
         this.isDestroyed = true;
+        // See the matching comment in BlockSprite.destroy(): cancels any
+        // tween still directly targeting this sprite (e.g. a position tween)
+        // so it can't keep writing to it after destroy() below.
+        Tween.removeTweens(this);
         super.destroy({ children: true });
     }
 }

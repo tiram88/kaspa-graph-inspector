@@ -51,8 +51,11 @@ export default class BlockSprite extends PIXI.Container {
     // .call(() => oldX.destroy()) callbacks below against firing on a child
     // that was already destroyed as part of a whole-sprite destroy() - see the
     // long comment on destroy() at the bottom of this file for why that
-    // combination matters.
-    private isDestroyed: boolean = false;
+    // combination matters. Public so callers that keep their own deferred
+    // work referencing this sprite (e.g. TimelineContainer's position-tween
+    // onChange handlers) can check it too, rather than only guarding what
+    // this class schedules internally.
+    public isDestroyed: boolean = false;
 
     constructor(application: PIXI.Application, block: Block) {
         super();
@@ -290,6 +293,19 @@ export default class BlockSprite extends PIXI.Container {
             return;
         }
         this.isDestroyed = true;
+        // TimelineContainer also animates this sprite's position directly
+        // (Tween.get(blockSprite).to({y: targetY}, 500, ...)) for smooth
+        // reflow when the DAG changes. If that animation is still in flight
+        // when this sprite is destroyed, CreateJS would otherwise keep
+        // writing to `.y` every frame - which throws once destroy() below
+        // has nulled out this object's transform. removeTweens(this) cancels
+        // any tween whose target is this exact object (also covers the
+        // alpha fade-in tween used when the block is first added), so that
+        // can't happen. The pointerover/pointerout hover-scale tween targets
+        // this.scale specifically (a separate object), so it needs its own
+        // removeTweens() call.
+        Tween.removeTweens(this);
+        Tween.removeTweens(this.scale);
         super.destroy({ children: true });
     }
 

@@ -85,9 +85,11 @@ export default class EdgeSprite extends PIXI.Container {
 
     private graphicsMap: { [definitionKey: string]: PIXI.Graphics } = {};
     private baseDefinition?: EdgeGraphicsDefinition;
-    // Guards against destroy() being called more than once - see the matching
-    // comment in HeightSprite.ts.
-    private isDestroyed: boolean = false;
+    // Guards against destroy() being called more than once, and lets external
+    // callers (TimelineContainer.updateEdgeSprite - see the comment there)
+    // check before acting on an edge sprite that may have been destroyed
+    // since a still-running position tween last touched it.
+    public isDestroyed: boolean = false;
 
     constructor(application: PIXI.Application, fromBlockId: number, toBlockId: number) {
         super();
@@ -320,6 +322,13 @@ export default class EdgeSprite extends PIXI.Container {
             return;
         }
         this.isDestroyed = true;
+        // Cancels any tween directly targeting this sprite. Note this does
+        // NOT cover TimelineContainer's edge-position animation: that tween
+        // targets a throwaway {fromY, toY} object, not the edge sprite
+        // itself, purely so it can drive an onChange callback - so it can't
+        // be found/cancelled from here. That path is guarded separately, in
+        // TimelineContainer.updateEdgeSprite.
+        Tween.removeTweens(this);
         super.destroy({ children: true });
     }
 }
