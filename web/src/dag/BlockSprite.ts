@@ -148,6 +148,21 @@ export default class BlockSprite extends PIXI.Container {
             this.blockSize = blockSize;
             this.currentSprite.texture = blockTexture(this.application, blockSize, this.blockColor);
 
+            // setColor()/setHighlighted() may currently have a cross-fade in
+            // flight: a Tween targeting this.currentText/this.currentHighlight
+            // whose completion callback destroy()s the respective *previous*
+            // text/highlight (see below). We're about to hard-reset both
+            // containers unconditionally regardless of that, destroying
+            // everything currently in them - old and mid-fade "current" alike.
+            // If we don't cancel those tweens first, their .call() fires later
+            // and tries to destroy() an object this method already destroyed,
+            // which throws and corrupts the shared CreateJS tween loop (the
+            // exact bug reported against the previous version of this fix).
+            if (this.currentText) {
+                Tween.removeTweens(this.currentText);
+            }
+            Tween.removeTweens(this.currentHighlight);
+
             this.currentText = this.buildText(blockSize);
             // removeChildren() only detaches the previous PIXI.Text from the display
             // tree - it does not free the canvas/GPU texture backing it. Explicitly
@@ -156,9 +171,9 @@ export default class BlockSprite extends PIXI.Container {
             this.textContainer.removeChildren().forEach(child => child.destroy());
             this.textContainer.addChild(this.currentText);
 
-            const highlight = this.buildHighlight();
+            this.currentHighlight = this.buildHighlight();
             this.highlightContainer.removeChildren().forEach(child => child.destroy());
-            this.highlightContainer.addChild(highlight);
+            this.highlightContainer.addChild(this.currentHighlight);
         }
         this.isBlockSizeInitialized = true;
     }
@@ -198,7 +213,19 @@ export default class BlockSprite extends PIXI.Container {
                     // throw (PIXI destroy() is not safe to call twice).
                     .call(() => {
                         if (!this.isDestroyed) {
-                            oldText!.destroy();
+                            // Belt-and-suspenders: isDestroyed and the
+                            // removeTweens() calls in setSize()/destroy()
+                            // account for every path we've found that could
+                            // destroy oldText before this callback runs, but
+                            // a stray double-destroy() throwing here would
+                            // otherwise corrupt the shared CreateJS tween
+                            // loop for every other animation in the app, so
+                            // this is deliberately over-cautious.
+                            try {
+                                oldText!.destroy();
+                            } catch (e) {
+                                console.warn("BlockSprite: failed to destroy oldText", e);
+                            }
                         }
                     });
             }
@@ -213,7 +240,11 @@ export default class BlockSprite extends PIXI.Container {
                 // Guarded by isDestroyed for the same reason as oldText above.
                 .call(() => {
                     if (!this.isDestroyed) {
-                        oldSprite.destroy();
+                        try {
+                            oldSprite.destroy();
+                        } catch (e) {
+                            console.warn("BlockSprite: failed to destroy oldSprite", e);
+                        }
                     }
                 });
         }
@@ -234,7 +265,11 @@ export default class BlockSprite extends PIXI.Container {
                 // Guarded by isDestroyed - see the matching comment in setColor().
                 .call(() => {
                     if (!this.isDestroyed) {
-                        oldHighlight.destroy();
+                        try {
+                            oldHighlight.destroy();
+                        } catch (e) {
+                            console.warn("BlockSprite: failed to destroy oldHighlight", e);
+                        }
                     }
                 });
             } else {
